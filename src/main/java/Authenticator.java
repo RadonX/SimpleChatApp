@@ -33,7 +33,7 @@ public class Authenticator {
     }
 
     public boolean verify(String psw, String password){
-        System.out.println("<autheticator> verify: " + password);
+        System.out.println("<autheticator> verify password: " + password);
 
         if (psw.equals(password)){
             return true;

@@ -3,29 +3,37 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.Scanner;
+import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 
 public class Server{
+
+    int TIME_OUT = 300000;//5min
+    int SERVER_TIME_OUT = 600000;//10min
 
     private ServerSocket serverSocket;
     private Authenticator authenticator;
     SimpleDateFormat sdf = new SimpleDateFormat("HH:mm:ss");
 
     class LoginList {
-        // since there are not many users, list is OK
-        // in the order of login time
+        // since there are not many users, list is sufficient
 
         ArrayList<String> userList;
         ArrayList<ClientThread> clientThreadList;
+        ArrayDeque<Long> logoutTimeList;
+        ArrayDeque<String> offlineList;
 
         LoginList(){
             userList = new ArrayList<String>();
             clientThreadList = new ArrayList<ClientThread>();
+
+            // in the order of login time
+            offlineList = new ArrayDeque<String>();
+            logoutTimeList = new ArrayDeque<Long>();
         }
 
         public synchronized void put(ClientThread clientThread, String user){
@@ -33,12 +41,45 @@ public class Server{
             clientThreadList.add(clientThread);
         }
 
-        public synchronized void remove(ClientThread clientThread){
-            remove(loginList.clientThreadList.indexOf(clientThread));
+        public synchronized boolean remove(ClientThread clientThread){
+            int ind = clientThreadList.indexOf(clientThread);
+            if (ind == -1){
+                return false;
+            }
+            remove(ind);
+            return true;
         }
         public synchronized void remove(int ind){
-            userList.remove(ind);
+            // log out
+            logoutTimeList.add(System.currentTimeMillis());
             clientThreadList.remove(ind);
+            offlineList.add(userList.remove(ind));
+        }
+
+        public ClientThread getClientThread(String user){
+            return clientThreadList.get(userList.indexOf(user));
+        }
+
+        public synchronized void deleteObsolete(long time){
+            while (logoutTimeList.size() > 0){
+                if (logoutTimeList.getFirst() < time){
+                    logoutTimeList.removeFirst();
+                    offlineList.removeFirst();
+                } else break;
+            }
+            if (logoutTimeList.size() == 0) {
+                System.out.println("**************"+logoutTimeList.getFirst());
+            }
+        }
+
+        public Iterator getLastOnlineList(long time){
+            Iterator i = offlineList.iterator(),
+                    j = logoutTimeList.iterator();
+            while (j.hasNext()){
+                if ((Long) j.next() >= time) break;
+                i.next();
+            }
+            return i;
         }
 
     }
@@ -51,14 +92,13 @@ public class Server{
         int port = Integer.parseInt(args[0]);
         Server server = new Server(port);
         server.start();
-        server.close();
     }
 
     public Server(int port) {
         // create a server socket that listens on a port
         try {
             serverSocket = new ServerSocket(port);
-            serverSocket.setSoTimeout(600000);//10min
+            serverSocket.setSoTimeout(SERVER_TIME_OUT);//10min
         } catch (IOException e) {
             System.err.println("Could not listen on port " + port);
             System.exit(-1);
@@ -74,26 +114,32 @@ public class Server{
         try {
             while(true) {
                 // accepts connections on the socket
-                // After a client does connect, the ServerSocket creates a new Socket
                 Socket client = serverSocket.accept();
                 ClientThread t = new ClientThread(client);
                 t.start();
-                //clientThreadList.add(t);
             }
         } catch(SocketTimeoutException s) {
             System.out.println("Server timed out!");
         } catch(IOException e) {
             e.printStackTrace();
         }
-
+        close();
     }
 
+    /*
+     * close server socket and client threads
+     */
     private void close() {
+        System.out.println("Start closing all client threads ...");
+        ClientThread clientThread;
         for(int i = loginList.clientThreadList.size() - 1; i>=0; i--) {
-            loginList.clientThreadList.get(i).close();
+            clientThread = loginList.clientThreadList.get(i);
+            System.out.println("\t" + clientThread.name + "closed");
+            clientThread.close();
         }
         try {
             serverSocket.close();
+            System.out.println("Server socket closed");
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -104,13 +150,25 @@ public class Server{
      * ClientThread - begin
      * * * * * * * * * * * */
 
+    // the list of commands the server supports
+    static List<String> zeroArgCmd = Arrays.asList("who", "logout");
+    static List<String> oneArgCmd = Arrays.asList("last", "broadcast");
+    static List<String> twoArgCmd = Collections.singletonList("send");
+    // patterns for parsing cmd
+    static Pattern patternGetCmd = Pattern.compile("\\s*(\\w+)\\s*(.*)\\s*"); // delete \s in the beginning and end
+    static Pattern patternGetTwoArgs = Pattern.compile("[(](.+)[)]\\s+(.+)|(.+)\\s+[(](.+)[)]|(\\w+)\\s+(.+)");
+
+    /*
+     *
+     */
     class ClientThread extends Thread{
 
         Socket socket;
-        String name;//, user = null;
+        String name, user;
         DataInputStream in;
         DataOutputStream out;
         int maxAttempt = 3;
+        int state = 0;
 
         public ClientThread(Socket client) {
             socket = client;
@@ -128,22 +186,38 @@ public class Server{
 
         public void run(){
             try{
-                socket.setSoTimeout(60000);//1min
+                socket.setSoTimeout(TIME_OUT);
 
                 out.writeUTF("connected to server " + socket.getLocalSocketAddress() + "\n");
 
                 // it may logout (close connection) inside following procedure
                 // with IOException thrown
+                String cmd;
                 if (authenticate()){
-                    exec();
+                    while ((cmd = in.readUTF()) != null) {
+                        execCmd(cmd);
+                    }
+                } else{
+                    System.out.println(name + "did not pass authentication. ");
+                    close();
                 }
 
-                close();
             } catch (SocketTimeoutException e) {
-                System.out.println("ClientThread timed out");
+                System.out.println(name + "timed out. ");
+                try {
+                    out.writeUTF("\nTimed out. ");//~~~~~~~~~
+                } catch (IOException e1) {
+                    e1.printStackTrace();
+                }
+                logout();
             } catch(IOException e){
-                e.printStackTrace();
+                // connection lost
+                if (state != 0){
+                    e.printStackTrace();
+                    //close();
+                }
             }
+
         }
 
         private boolean authenticate() throws IOException {
@@ -158,7 +232,7 @@ public class Server{
                 } else {
                     psw = authenticator.getpsw(username);
                     if (psw == null) {
-                        out.writeUTF("The user name does not exist.\nUsername: ");
+                        out.writeUTF("Username does not exist.\nUsername: ");
                     }else break; //psw get
                 }
             }
@@ -168,6 +242,7 @@ public class Server{
             out.writeUTF("Password: ");
             while (attemptLeft > 0){
                 attemptLeft--;
+                // Password "" is also considered as an attempt
                 if (authenticator.verify(psw, in.readUTF()) ){
                     out.writeUTF("Welcome to the simple chat server!\n");
                     setUser(username);
@@ -186,55 +261,145 @@ public class Server{
             return false;
         }
 
+        public long getTime(){
+            long millis = System.currentTimeMillis();
+            return millis;
+        }
+
         private void setUser(String username){
-            String time = sdf.format(new Date());
-            System.out.println(name + "(" + time + ") successfully login as " + username);
-            //user = username; //~~~~~~~
+            Date date = new Date();
+            String time = sdf.format(date);
+            name = "Client(" + username + ")" + name.substring(6);
+            System.out.println(name + "successfully login at " + time);
+            state++;// login
+            user = username;
             loginList.put(this, username);//"this" is ClientThread
         }
 
         private void logout(){
-            loginList.remove(this);
+            state--;// logout
             close();
-        }
-
-        private void exec() throws IOException {
-            String cmd;
-            while ((cmd = in.readUTF()) != null) {
-                execCmd(cmd);
-
-                //regexp??
-
-                //if (outputLine.equals("Bye."))   break;
+            if (loginList.remove(this)){
+                System.out.println(name + "successfully logged out with state = " + state);
+                // no need to reply to client
+            } else {
+                System.out.println(name + "state = " + state);
             }
-
         }
 
         private void execCmd(String command) throws IOException {
-            System.out.println(name + command);
+            System.out.println(name + "=> " + command);
 
             // parse cmd
-            String cmd;
-            int cmdInd = command.indexOf(" ");
-            if (cmdInd == -1){
-                cmd = command;
-            } else {
-                cmd = command.substring(0, cmdInd);
+            String cmd, arg;
+            if (command.length() != 0) {
+                Matcher matcher = patternGetCmd.matcher(command);
+                matcher.matches();
+                cmd = matcher.group(1);
+                arg = matcher.group(2);
+            } else{
+                cmd = "";
+                arg = "";
             }
-            Scanner s;
-                //ref: [Scanner (Java Platform SE 7 )](http://docs.oracle.com/javase/7/docs/api/java/util/Scanner.html)
 
+            if (cmd.matches("\\s*")){
+                // do nothing
+                out.writeUTF("");
+            } else if (zeroArgCmd.contains(cmd)){
+                if (arg.equals("")){
+                    if (cmd.equals("who")) {
+                        out.writeUTF(String.join(" ", loginList.userList));
+                    } else if (cmd.equals("logout")){ // => logout
+                        logout();
+                    }
+                } else{
+                    out.writeUTF("Usage: " + cmd);
+                }
 
-            if (cmd.equalsIgnoreCase("who")) {
-                String output = String.join(" ", loginList.userList);
-                out.writeUTF(output + "\n");
-            } else if (cmd.equalsIgnoreCase("last")) {
-                //s = new Scanner(command).useDelimiter("\\s*");
-            } else if (cmd.equalsIgnoreCase("logout")) {
-                logout();
+            } else if (oneArgCmd.contains(cmd)){
+                if (cmd.equals("broadcast")){
+                    if (arg.equals("")){
+                        out.writeUTF("Usage: broadcast <message>");
+                    } else{
+                        System.out.println(name + "broadcast: " + arg);
+                        broadcast(arg);
+                    }
+                } else { // => last
+
+                }
+
+            } else if (twoArgCmd.contains(cmd)){ // => send
+                String[] recUsers = null;
+                String message = null;
+                Matcher matcher = patternGetTwoArgs.matcher(arg);
+                if (matcher.matches()){
+                    if (matcher.group(1) != null) {
+                        recUsers = matcher.group(1).split("\\s+");
+                        message = matcher.group(2);
+                    } else if (matcher.group(3) != null){
+                        recUsers = matcher.group(3).split("\\s+");
+                        message = matcher.group(4);
+                    } else if (matcher.group(5) != null){
+                        recUsers = new String[]{matcher.group(5)};
+                        message = matcher.group(6);
+                    }
+                    sendMessage(recUsers, message);
+                } else{
+                    out.writeUTF("Usage: send (<user> ... <user>) <message> \n" +
+                            "  or: send <user> <message>");
+                }
+
             } else {
-                out.writeUTF("Command cannot be recognized\n");
+                out.writeUTF("Command not found.");
             }
+
+        }
+
+        private void sendMessage(String[] recUsers, String msg){
+            ClientThread clientThread;
+            String message = "\n[" + user + "] " + msg;
+            String mymessage = "";
+            int count = 0;
+            for (String recUser : recUsers){
+                try{
+                    clientThread = loginList.getClientThread(recUser);
+                    if (clientThread == this){
+                        mymessage = "[YOU] " + msg + "\n";
+                        count++;
+                        continue;
+                    }
+                    clientThread.out.writeUTF(message);
+                    count++;
+                } catch (Exception e) {
+                    System.out.println("Failed to send message to " + recUser);
+                }
+            }
+            try {
+                out.writeUTF(mymessage + "Your message is successfully send to " + count + " online users.");
+            } catch (IOException e) {}
+
+        }
+
+        private void broadcast(String msg) { //~~ what happened when multiple clients broadcast? synchronized?
+            String message = "\n[" + user + "] " + msg;
+                // start with "\n" so that it will not print right after "=> "
+            int count = 0;
+            for (ClientThread clientThread : loginList.clientThreadList ){
+                if (clientThread == this) continue; // do not broadcast msg to oneself
+                try {
+                    clientThread.out.writeUTF(message);
+                    count++;
+                } catch (IOException e) {
+                    System.out.println("Failed to broadcast message to " + clientThread.name);
+                    e.printStackTrace();
+                }
+            }
+            try {
+                out.writeUTF("Your message is successfully broadcast to " + count + " online users.");
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+
         }
 
         private void close(){
@@ -242,6 +407,7 @@ public class Server{
                 out.close();
                 in.close();
                 socket.close();
+                System.out.println(name + "closed.");
             }catch(Exception e) {}
         }
 
