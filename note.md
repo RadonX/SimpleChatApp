@@ -8,7 +8,9 @@ build.xml
 
 #### todo
 
-search for ~~
+can deploy it on AWS EC2 instances. Remember to open the port you use. 
+
+1. when is `/bash_profile` updated
 
 want it to exit instantly after log out without enter, so does for timeout. 
 but seems that read will block everything.
@@ -16,25 +18,42 @@ but seems that read will block everything.
 check when client close connection, how is loginList, 
 i think i should carefully close those lost clientThreads
  check the logistics of all try/catch, that's where you close them
-
-also client side, think about when it will be closed
+-target 1.6 -source 1.6
 
     //private void close(){}
 getpeername()
 spin lock
 ex: KeyboardInterrupt
+    after time out, it stills byebye
+test logout
+test russian command
 
-test pass
 
-utf-8
- InputStream is = process.getInputStream();
+---
+
+not really extra feature. but make the terminal robust to no command / invalid command arguments 
+friendly, instead of "Command not recognized"
+
+java version "1.7.0_95"
+
+export TIME_OUT=30
+export BLOCK_TIME=60
+
+---
+
+while ((line = inConsole.readLine()) != null) {
+String msg = scan.nextLine();
+InputStream is = process.getInputStream();
                 InputStreamReader isr = new InputStreamReader(is, "UTF-8");
                 BufferedReader br = new BufferedReader(isr);
 
-not really extra feature. but make the terminal robust to no command / invalid command arguments 
 
 1. [Java Makefile Examples](http://jwrr.com/content/Gnu-Makefile-Examples/)
+2. [java - How can I "intercept" Ctrl+C in a CLI application? - Stack Overflow](http://stackoverflow.com/questions/1216172)
 
+cannot make it work on multiple machines, don't know why
+
+local ip, e.g., how to connect to server on another ec2 instance
 
 #### Reference
 
@@ -62,6 +81,19 @@ Thread input = new Thread() {
       }
     }
   }
+```
+
+
+
+You could add a hook before the loop.
+
+```
+Runtime.getRuntime().addShutdownHook(new Thread() {
+    @Override
+    public void run() {
+        System.out.println("Shutdown");
+    }
+});
 ```
 
 

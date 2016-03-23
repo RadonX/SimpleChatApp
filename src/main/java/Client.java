@@ -1,7 +1,5 @@
 import java.io.*;
 import java.net.Socket;
-import java.net.SocketException;
-import java.net.SocketTimeoutException;
 
 /**
  *
@@ -12,13 +10,25 @@ public class Client {
     DataOutputStream out;
     DataInputStream in;
     BufferedReader inConsole;
-
+    int state = 0;
 
     public static void main(String [] args){
+
         String serverName = args[0];
         int port = Integer.parseInt(args[1]);
-        Client client = new Client(serverName, port);
+        final Client client = new Client(serverName, port);
+
+        Runtime.getRuntime().addShutdownHook(new Thread() {
+            @Override
+            public void run() {
+                System.out.print("\nBye bye~ ");
+                client.state = 1;
+                client.close();
+            }
+        });
+
         client.start();
+
     }
 
     Client(String serverName, int port){
@@ -39,6 +49,16 @@ public class Client {
         }
     }
 
+    public void close(){
+        try {
+            socket.close();
+            in.close();
+            out.close();
+            inConsole.close();
+        }catch (Exception e){
+            //System.out.println("Client was already closed.");
+        }
+    }
 
     public void start(){
         String serverReply;
@@ -46,7 +66,7 @@ public class Client {
         try {
             System.out.print(in.readUTF());//returns "connected to server ...
 
-            while (true){ //while ((line = inConsole.readLine()) != null) {
+            while (true){
                 serverReply = in.readUTF();
                 System.out.print(serverReply);
                 if (serverReply.contains("Welcome")) break; // successfully login
@@ -55,10 +75,11 @@ public class Client {
             // start terminal mode
             System.out.print("=> ");
 
-            // create a Thread to listen to the server
+            // Create a Thread to listen to the server
             new ListenToServer().start();
+                // information such as "Timed out" can only prompt directly
+                // after login, since another thread was not yet created.
 
-            //~~~~ String msg = scan.nextLine();
             while (true){
                 out.writeUTF(inConsole.readLine());
             }
@@ -90,8 +111,8 @@ public class Client {
                             // otherwise, should implement io with ObjectInput/OutputStream
                             if (serverReply.startsWith("\nT")){ // timeout
                                 System.out.print(serverReply);
-                                close();
-                                break;
+                                close();break;
+                                //throw IOException;
                             }
                         }
 
@@ -101,22 +122,15 @@ public class Client {
 
                 }
             } catch (IOException e){
-                // connection lost.
-                System.out.println("You're logged out.");
-                close();
+                if (state == 0) {
+                    // client side works well, server closes the connection
+                    System.out.print("\nDisconnect from server");
+                    close();
+                }
             }
         }
     }
 
-    public void close(){
-        try {
-            in.close();
-            out.close();
-            socket.close();
-            inConsole.close();
-        }catch (Exception e){
-            System.out.println("Client was already closed.");
-        }
-    }
 
 }
+

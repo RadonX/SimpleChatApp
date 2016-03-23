@@ -8,8 +8,6 @@ public class ShowInterfaces
         // returns your local address
         System.out.println("Host addr: " + InetAddress.getLocalHost().getHostAddress());
 
-        // Make sure the local host that you get back isn't 127.0.0.1 ~~~~~~
-
         Enumeration<NetworkInterface> n = NetworkInterface.getNetworkInterfaces();
         for (; n.hasMoreElements();)
         {
